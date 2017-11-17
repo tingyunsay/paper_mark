@@ -65,21 +65,44 @@ def pdf2text(file_name):
     res = commands.getstatusoutput("pdf2txt.py -o %s.html %s"%(re.sub(".pdf","",file_name).replace(" ","\ "),file_name.replace(" ","\ ")))
 '''
 
+#如果目录不存在，创建它；存在，返回True
+def mkfile(path):
+    isexists = os.path.exists(path)
+    if isexists:
+        logging.info("路径 %s 已经存在，略过...."%path)
+        return True
+    else:
+        logging.info("创建路径 %s ...."%path)
+        fk = commands.getstatusoutput("mkdir -p %s"%path)
+        if fk[0] == 0:
+            logging.info("创建路径 %s 成功"%path)
+            return True
+        else:
+            logging.info("Error,创建路径 %s 失败" % path)
+            return False
+
 #如果文件存在不下载，判断html文件，如果html文件都存在，那pdf必然存在
 #下载到./pdf_file/，将pdf转化成对应的html存在./html_file/路径下 , 返回pdf_html的名字
 def download_pdf(url):
     pdf_name = re.search("\w*$", url).group().replace(" ", "")
+    if not mkfile("html_file"):
+        logging.info("mkfile函数出现未知问题，程序中断")
+        return
     isexists = os.path.exists("./html_file/%s.html"%pdf_name)
     if isexists:
         logging.info("html文件存在，略过....")
         return pdf_name
     else:
+        print url
         response = requests.get(url)
         if re.findall("[4|5|3]", str(response.status_code)):
-            logging.warning("the url %s is failed ,status code is %s !" % (link, response.status_code))
+            logging.warning("the url %s is failed ,status code is %s !" % (url, response.status_code))
             return None
         else:
             content = response.content
+            if not mkfile("pdf_file"):
+                logging.info("mkfile函数出现未知问题，程序中断")
+                return
             with open("./pdf_file/%s.pdf"%pdf_name,"wb") as f:
                 f.write(content)
                 f.close()
@@ -222,12 +245,13 @@ def get_info_from_web(link):
     info = []
     # url_head = re.search("http://.*?(?=/)",link).group()
     py_content = loadurl_pyquery(link)
-
     #以上的匹配都无法正确找到acknow，这里采用读取pdf，再转换
     #return
     title = py_content("h1").text()
     abstract = py_content('.abstractSection p ').text()
     author = [x.text() for x in list(py_content('.authors:first .entryAuthor').items())]
+    #在COLI上面的论文都是1对应1的关系
+    belong = re.findall("(?<=/div>).*?(?=<)", py_content('.authors-content').html() + "<", re.S)
 
     pdf_url = re.sub("doi", "doi/pdf", link)
     pdf_name = download_pdf(pdf_url)
@@ -237,29 +261,72 @@ def get_info_from_web(link):
         acknow = re.findall("(?<=Acknowledgments).*(?=References)", html_content.text())
     else:
         acknow = "np.nan"
+    #组织可能没有，但是有的话一定
 
-    fields = "np.nan"
+    fields = py_content('li:contains("Home")').next().remove('span').text()
     keywords = "np.nan"
     email = "np.nan"
-    belong = "np.nan"
+
     link = link
     date = re.search("(?<=Online ).*(?=doi:)", py_content('.articleInfo').text()).group()
     publisher = re.search("(?<=under a ).+(?=\. For)", py_content('.OATextContainer > p').text()).group()
 
-    for i in author:
-        #从下表0开始： 作者 0，标题 1，摘要 2，致谢 3，领域 4，关键词5
-        temp = [str(i) , str(title) , str(abstract) , str(acknow) , fields , keywords , email , belong ,link ,date , publisher]
+    for j,i in enumerate(author):
+        #从下表0开始： 作者 0，标题 1，摘要 2， 致谢 3， 领域   4 ，关键词5
+        #           邮箱 6  组织 7  链接 8  时间 9   发布人 10
+        temp = [str(author[j]) , str(title) , str(abstract) , str(acknow) , fields , keywords , email , str(belong[j]).replace("*","").replace("†","").replace("\n","") ,link ,date , publisher]
         info.append(temp)
     return info
+
+#网站aclweb论文列表，上面是mitpress
+#这里我们直接给出两个站点：http://aclweb.org/anthology/C/C16/  和  http://aclweb.org/anthology/C/C14/   ，扫完全部即可
+def aclweb_get_info_from_web(link):
+    info = []
+    # url_head = re.search("http://.*?(?=/)",link).group()
+    py_content = loadurl_pyquery(link)
+    # 以上的匹配都无法正确找到acknow，这里采用读取pdf，再转换
+    # return
+    title = py_content("h1").text()
+    abstract = py_content('.abstractSection p ').text()
+    author = [x.text() for x in list(py_content('.authors:first .entryAuthor').items())]
+    # 在COLI上面的论文都是1对应1的关系
+    belong = re.findall("(?<=/div>).*?(?=<)", py_content('.authors-content').html() + "<", re.S)
+
+    pdf_url = re.sub("doi", "doi/pdf", link)
+    pdf_name = download_pdf(pdf_url)
+    html_content = loadhtml_pyquery("./html_file/%s.html" % pdf_name)
+    # 在网页中无法找到这个Acknowledgments
+    if re.findall("Acknowledgments", html_content.text()):
+        acknow = re.findall("(?<=Acknowledgments).*(?=References)", html_content.text())
+    else:
+        acknow = "np.nan"
+    # 组织可能没有，但是有的话一定
+
+    fields = "np.nan"
+    keywords = "np.nan"
+    email = "np.nan"
+
+    link = link
+    date = re.search("(?<=Online ).*(?=doi:)", py_content('.articleInfo').text()).group()
+    publisher = re.search("(?<=under a ).+(?=\. For)", py_content('.OATextContainer > p').text()).group()
+
+    for j, i in enumerate(author):
+        # 从下表0开始： 作者 0，标题 1，摘要 2， 致谢 3， 领域   4 ，关键词5
+        #           邮箱 6  组织 7  链接 8  时间 9   发布人 10
+        temp = [str(author[j]), str(title), str(abstract), str(acknow), fields, keywords, email, str(belong[j]), link,
+                date, publisher]
+        info.append(temp)
+    return info
+
 
 def write_excel(url):
     wb = init_excel(excel_name)
     wb1 = wb.get_sheet_by_name("mark_by_tingyun")
-    try:
-        info = get_info_from_web(url)
-    except Exception, e:
-        info = None
-        logging.error("啥都没有 %s"%url)
+    #try:
+    info = get_info_from_web(url)
+    #except Exception, e:
+    #    info = None
+    #    logging.error("啥都没有 %s"%url)
     if info:
         for i in info:
             wb1.append(['',i[1],i[0],i[6],
@@ -271,13 +338,32 @@ def write_excel(url):
     else:
         pass
 
+def read_excel(file_name):
+    cf = openpyxl.load_workbook(filename="./%s" % file_name,read_only=True)
+    sheets = cf.get_sheet_names()
+    content = cf.get_sheet_by_name(sheets[0])
+    real_data = list(content.rows)[2:]
+    res_url = []
+    for i in iter(real_data):
+        url = i[3].value.encode('utf8')
+        res_url.append(url) if re.findall("COLI",url) else None
+    return res_url
 
 if __name__=='__main__':
     a = get_all_pdfs()
     b = get_all_htmls()
     #getinfo_from_html(b[0])
-    url = "http://www.mitpressjournals.org/doi/10.1162/COLI_a_00132"
-    write_excel(url)
+    #url = "http://www.mitpressjournals.org/doi/10.1162/COLI_a_00132"
+    #url = "http://www.mitpressjournals.org/doi/10.1162/COLI_a_00278"
+    #url = "https://doi.org/10.1162/COLI_a_00290"
+    #write_excel(url)
+    res_url = read_excel("COLING.xlsx")
+    nima = set()
+    for url in res_url:
+        fuck_url = re.sub("doi.org","www.mitpressjournals.org/doi",url)
+        if nima.add(fuck_url):
+            print fuck_url
 
-
-
+    for i in nima:
+        print i
+        #write_excel(i)
